@@ -1,0 +1,18 @@
+[package]
+name = "dynqueue"
+version = "0.1.2"
+authors = ["Harald Hoyer <harald@redhat.com>"]
+edition = "2018"
+
+license = "MIT"
+documentation = "https://docs.rs/dynqueue"
+homepage = "https://github.com/haraldh/dynqueue"
+repository = "https://github.com/haraldh/dynqueue"
+description = "Dynamically extendable Rayon parallel iterator"
+readme = "README.md"
+
+keywords = [ "parallel", "performance", "thread", "join", "concurrency"]
+categories = [ "concurrency" ]
+
+[dependencies]
+rayon = "1.3.0"
