@@ -1,3 +1,6 @@
+[![Rust](https://github.com/haraldh/dynqueue/workflows/Rust/badge.svg)](https://github.com/haraldh/dynqueue/actions)
+[![Coverage Status](https://coveralls.io/repos/github/haraldh/dynqueue/badge.svg?branch=master)](https://coveralls.io/github/haraldh/dynqueue?branch=master)
+
 # DynQueue - dynamically extendable Rayon parallel iterator
 
 A `DynQueue<T>` can be iterated with `into_par_iter` producing `(DynQueueHandle, T)` elements.
