@@ -69,6 +69,39 @@ fn dynqueue_iter_test_const_sleep() {
     );
 }
 
+#[cfg(feature = "crossbeam-queue")]
+#[test]
+fn dynqueue_iter_test_const_sleep_segqueue() {
+    use crossbeam_queue::SegQueue;
+    use rayon::iter::IntoParallelIterator as _;
+    use rayon::iter::ParallelIterator as _;
+    use std::time::Duration;
+    let expected = get_expected();
+
+    let med = expected.iter().sum::<u64>() / expected.iter().count() as u64;
+    let q = SegQueue::new();
+    get_input().drain(..).for_each(|ele| q.push(ele));
+
+    let jq = DynQueue::new(q);
+    let now = std::time::Instant::now();
+
+    let mut res = jq
+        .into_par_iter()
+        .map(handle_queue)
+        .map(|v| {
+            std::thread::sleep(Duration::from_millis(SLEEP_MS * med));
+            v
+        })
+        .collect::<Vec<_>>();
+    eprintln!("elapsed = {:#?}", now.elapsed());
+    res.sort();
+    assert_eq!(res, expected);
+    eprintln!(
+        "instead of = {}ms",
+        res.iter().count() * med as usize * SLEEP_MS as usize
+    );
+}
+
 #[test]
 fn dynqueue_iter_test_const_sleep_vecdeque() {
     use rayon::iter::IntoParallelIterator as _;

@@ -23,3 +23,8 @@ fn main() {
     assert_eq!(result, vec![1, 2, 3, 4]);
 }
 ```
+
+## Features
+
+* `crossbeam-queue` : to use `crossbeam::queue::SegQueue` as the inner collection.
+

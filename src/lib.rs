@@ -119,6 +119,36 @@ impl<T> Queue<T> for VecDeque<T> {
     }
 }
 
+#[cfg(feature = "crossbeam-queue")]
+use crossbeam_queue::SegQueue;
+
+#[cfg(feature = "crossbeam-queue")]
+impl<T> Queue<T> for SegQueue<T> {
+    #[inline(always)]
+    fn push(&mut self, v: T) {
+        SegQueue::push(self, v);
+    }
+
+    #[inline(always)]
+    fn pop(&mut self) -> Option<T> {
+        SegQueue::pop(self).ok()
+    }
+
+    #[inline(always)]
+    fn len(&self) -> usize {
+        SegQueue::len(self)
+    }
+
+    #[inline(always)]
+    fn split_off(&mut self, size: usize) -> Self {
+        let q = SegQueue::new();
+        (0..size)
+            .filter_map(|_| self.pop())
+            .for_each(|ele| q.push(ele));
+        q
+    }
+}
+
 // PhantomData should prevent `DynQueueInner` to outlive the original `DynQueue`
 // but does not always.
 struct DynQueueInner<'a, T, U: Queue<T>>(std::sync::RwLock<U>, PhantomData<&'a T>);
@@ -137,7 +167,11 @@ impl<'a, T, U: Queue<T>> DynQueueHandle<'a, T, U> {
 /// The `DynQueue<T>` which can be parallel iterated over
 pub struct DynQueue<'a, T, U: Queue<T>>(Arc<DynQueueInner<'a, T, U>>);
 
-impl<'a, T, U: Queue<T>> DynQueue<'a, T, U> {
+impl<'a, T, U: Queue<T>> DynQueue<'a, T, U>
+where
+    T: Send + Sync,
+    U: Queue<T> + Send + Sync,
+{
     /// Create a new `DynQueue<T>` from a `Vec<T>`
     #[inline]
     pub fn new(lifo: U) -> Self {
