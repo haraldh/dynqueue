@@ -7,17 +7,21 @@ A `DynQueue<T>` can be iterated with `into_par_iter` producing `(DynQueueHandle,
 With the `DynQueueHandle<T>` a new `T` can be inserted in the `DynQueue<T>`,
 which is currently iterated over.
 
-```rust
-use dynqueue::DynQueue;
+A `Vec<T>`, `VecDeque<T>` and `crossbeam_queue::SegQueue<T>` (with `feature = "crossbeam-queue"`)
+can be turned into a `DynQueue<T>` with `.into_dyn_queue()`.
 
+```rust
 use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::ParallelIterator as _;
 
+use dynqueue::IntoDynQueue as _;
+
 fn main() {
-    let mut result = DynQueue::new(vec![1, 2, 3])
-                         .into_par_iter()
-                         .map(|(handle, value)| { if value == 2 { handle.enqueue(4) }; value })
-                         .collect::<Vec<_>>();
+    let mut result = vec![1, 2, 3]
+        .into_dyn_queue()
+        .into_par_iter()
+        .map(|(handle, value)| { if value == 2 { handle.enqueue(4) }; value })
+        .collect::<Vec<_>>();
     result.sort();
 
     assert_eq!(result, vec![1, 2, 3, 4]);

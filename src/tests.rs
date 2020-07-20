@@ -1,4 +1,4 @@
-use crate::{DynQueue, DynQueueHandle, Queue};
+use crate::{DynQueueHandle, IntoDynQueue, Queue};
 use std::collections::VecDeque;
 
 const SLEEP_MS: u64 = 10;
@@ -49,7 +49,7 @@ fn dynqueue_iter_test_const_sleep() {
 
     let med = expected.iter().sum::<u64>() / expected.iter().count() as u64;
 
-    let jq = DynQueue::new(get_input());
+    let jq = get_input().into_dyn_queue();
     let now = std::time::Instant::now();
 
     let mut res = jq
@@ -79,13 +79,13 @@ fn dynqueue_iter_test_const_sleep_segqueue() {
     let expected = get_expected();
 
     let med = expected.iter().sum::<u64>() / expected.iter().count() as u64;
-    let q = SegQueue::new();
-    get_input().drain(..).for_each(|ele| q.push(ele));
+    let jq = SegQueue::new();
+    get_input().drain(..).for_each(|ele| jq.push(ele));
 
-    let jq = DynQueue::new(q);
     let now = std::time::Instant::now();
 
     let mut res = jq
+        .into_dyn_queue()
         .into_par_iter()
         .map(handle_queue)
         .map(|v| {
@@ -111,10 +111,11 @@ fn dynqueue_iter_test_const_sleep_vecdeque() {
 
     let med = expected.iter().sum::<u64>() / expected.iter().count() as u64;
 
-    let jq = DynQueue::new(VecDeque::from(get_input()));
+    let jq = VecDeque::from(get_input());
     let now = std::time::Instant::now();
 
     let mut res = jq
+        .into_dyn_queue()
         .into_par_iter()
         .map(handle_queue)
         .map(|v| {
@@ -137,11 +138,12 @@ fn dynqueue_iter_test_sleep_v() {
     use rayon::iter::ParallelIterator as _;
     use std::time::Duration;
 
-    let jq = DynQueue::new(get_input());
+    let jq = get_input();
 
     let now = std::time::Instant::now();
 
     let mut res = jq
+        .into_dyn_queue()
         .into_par_iter()
         .map(handle_queue)
         .map(|v| {
@@ -161,11 +163,12 @@ fn dynqueue_iter_test_sleep_inv_v() {
     use rayon::iter::ParallelIterator as _;
     use std::time::Duration;
 
-    let jq = DynQueue::new(get_input());
+    let jq = get_input();
 
     let now = std::time::Instant::now();
 
     let mut res = jq
+        .into_dyn_queue()
         .into_par_iter()
         .map(handle_queue)
         .map(|v| {
