@@ -32,3 +32,11 @@ fn main() {
 
 * `crossbeam-queue` : to use `crossbeam::queue::SegQueue` as the inner collection.
 
+## Changelog
+
+### 0.2.0
+- introduce `IntoDynQueue`
+- handle lockless collections
+
+### 0.1.0
+- initial version
