@@ -1,6 +1,6 @@
 [package]
 name = "dynqueue"
-version = "0.2.2-alpha.0"
+version = "0.3.0"
 authors = ["Harald Hoyer <harald@redhat.com>"]
 edition = "2018"
 
