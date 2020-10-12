@@ -198,7 +198,7 @@ impl<T> Queue<T> for SegQueue<T> {
 
     #[inline(always)]
     fn pop(&self) -> Option<T> {
-        SegQueue::pop(self).ok()
+        SegQueue::pop(self)
     }
 
     #[inline(always)]
