@@ -1,29 +1,34 @@
-name:                           coverage
+name: Coverage
 
 on:
+  # Trigger the workflow on push or pull request,
+  # but only for the master branch
   push:
     branches:
       - master
   pull_request:
     branches:
       - master
+  release:
+    types:
+      - created
 
 jobs:
-  test:
-    name:                       coverage
-    runs-on:                    ubuntu-latest
-    container:
-      image:                    xd009642/tarpaulin
-      options:                  --security-opt seccomp=unconfined
+  coverage:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
     steps:
-      - name:                   Checkout repository
-        uses:                   actions/checkout@v2
-
-      - name:                   Generate code coverage
-        run: |
-          cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out Lcov --output-dir coverage
-
-      - name:                   Upload to coveralls
-        uses: coverallsapp/github-action@master
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup update stable
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate code coverage
+        run: cargo llvm-cov --all-features --workspace --codecov --output-path codecov.json
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.CODECOV_TOKEN }} # not required for public repos
+          files: codecov.json
+          fail_ci_if_error: true
