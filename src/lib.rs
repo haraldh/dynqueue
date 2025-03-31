@@ -223,7 +223,7 @@ struct DynQueueInner<'a, T, U: Queue<T>>(U, PhantomData<&'a T>);
 /// The `DynQueueHandle` returned by the iterator in addition to `T`
 pub struct DynQueueHandle<'a, T, U: Queue<T>>(Arc<DynQueueInner<'a, T, U>>);
 
-impl<'a, T, U: Queue<T>> DynQueueHandle<'a, T, U> {
+impl<T, U: Queue<T>> DynQueueHandle<'_, T, U> {
     /// Enqueue `T` in the `DynQueue<T>`, which is currently iterated.
     #[inline]
     pub fn enqueue(&self, job: T) {

@@ -47,7 +47,7 @@ fn dynqueue_iter_test_const_sleep() {
     use std::time::Duration;
     let expected = get_expected();
 
-    let med = expected.iter().sum::<u64>() / expected.iter().count() as u64;
+    let med = expected.iter().sum::<u64>() / expected.len() as u64;
 
     let jq = get_input().into_dyn_queue();
     let now = std::time::Instant::now();
@@ -65,7 +65,7 @@ fn dynqueue_iter_test_const_sleep() {
     assert_eq!(res, expected);
     eprintln!(
         "instead of = {}ms",
-        res.iter().count() * med as usize * SLEEP_MS as usize
+        res.len() * med as usize * SLEEP_MS as usize
     );
 }
 
@@ -109,7 +109,7 @@ fn dynqueue_iter_test_const_sleep_vecdeque() {
     use std::time::Duration;
     let expected = get_expected();
 
-    let med = expected.iter().sum::<u64>() / expected.iter().count() as u64;
+    let med = expected.iter().sum::<u64>() / expected.len() as u64;
 
     let jq = VecDeque::from(get_input());
     let now = std::time::Instant::now();
@@ -128,7 +128,7 @@ fn dynqueue_iter_test_const_sleep_vecdeque() {
     assert_eq!(res, expected);
     eprintln!(
         "instead of = {}ms",
-        res.iter().count() * med as usize * SLEEP_MS as usize
+        res.len() * med as usize * SLEEP_MS as usize
     );
 }
 
@@ -181,7 +181,7 @@ fn dynqueue_iter_test_sleep_inv_v() {
     assert_eq!(res, get_expected());
     eprintln!(
         "instead of = {}ms",
-        (res.iter().count() as u64 * 22 - res.iter().sum::<u64>()) * SLEEP_MS
+        (res.len() as u64 * 22 - res.iter().sum::<u64>()) * SLEEP_MS
     );
 }
 
@@ -196,7 +196,7 @@ fn par_iter_test() {
     let res = get_expected()
         .into_par_iter()
         .map(|v| {
-            std::thread::sleep(Duration::from_millis(SLEEP_MS * v as u64));
+            std::thread::sleep(Duration::from_millis(SLEEP_MS * v));
             v
         })
         .collect::<Vec<_>>();
