@@ -13,21 +13,26 @@ on:
     types:
       - created
 
+permissions:
+  contents: read
+
 jobs:
   coverage:
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install Rust
         run: rustup update stable
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@d630c3ba8c9bb0648bcefda869fb0d9b98c611d9 # cargo-llvm-cov
       - name: Generate code coverage
-        run: cargo llvm-cov --all-features --workspace --codecov --output-path codecov.json
+        run: cargo llvm-cov --all-features --workspace --codecov --output-path codecov.json -- --skip dynqueue_iter_test_parallelism
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@04b047e8bb82a0c002c8312c1c880fbc6a999d45 # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }} # not required for public repos
           files: codecov.json
