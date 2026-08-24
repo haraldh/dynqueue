@@ -137,41 +137,79 @@ fn empty_queue() {
     assert!(out.into_inner().unwrap().is_empty());
 }
 
+// Regression guard for the crate's core feature: `for_each_dyn` must let each
+// job add NEW work while the queue is draining, and that dynamically enqueued
+// work must be processed in parallel rather than being forced back onto the
+// producing thread (the historical bug). Every job enqueues its two children
+// (2v+1, 2v+2 down to `max`) while it runs, so each processed value except the
+// seed is itself a dynamically added job. Run on a private 4-thread rayon pool
+// via `ThreadPool::install`, isolated from the harness's other rayon work
+// (which shares the global pool), so peak overlap deterministically reaches
+// the full pool size.
 #[test]
 fn dynqueue_iter_test_parallelism() {
-    use rayon::current_num_threads;
+    use rayon::ThreadPoolBuilder;
+    use std::collections::BTreeSet;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
-    let threads = current_num_threads();
-    // With only one worker there is nothing to parallelize.
-    if threads <= 1 {
-        return;
-    }
-
-    let jobs = 64u32;
+    const THREADS: usize = 4;
     let per = Duration::from_millis(10);
+    let max = 64u64;
 
     let active = AtomicU64::new(0);
     let max_active = AtomicU64::new(0);
+    let seen = Mutex::new(BTreeSet::new());
 
-    (0..jobs)
-        .collect::<Vec<_>>()
-        .into_dyn_queue()
-        .for_each_dyn(|_, _| {
-            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
-            max_active.fetch_max(now, Ordering::SeqCst);
-            std::thread::sleep(per);
-            active.fetch_sub(1, Ordering::SeqCst);
+    ThreadPoolBuilder::new()
+        .num_threads(THREADS)
+        .build()
+        .unwrap()
+        .install(|| {
+            // Seed a single item; every job enqueues its two children while
+            // draining, so all other jobs arrive dynamically.
+            vec![0u64].into_dyn_queue().for_each_dyn(|h, v| {
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_active.fetch_max(now, Ordering::SeqCst);
+
+                seen.lock().unwrap().insert(v);
+
+                for c in [2 * v + 1, 2 * v + 2] {
+                    if c <= max {
+                        h.enqueue(c);
+                    }
+                }
+
+                std::thread::sleep(per);
+                active.fetch_sub(1, Ordering::SeqCst);
+            });
         });
 
-    // Regression guard: the original implementation kept all dynamically enqueued
-    // work on the producing thread (effective concurrency 1). Parallel execution
-    // must run at least two items concurrently. Counting actual overlap is
-    // deterministic and independent of runner load, unlike a wall-clock ratio.
+    // Every dynamically enqueued job was actually picked up and processed
+    // (the closure of {0} under the children rule, bounded by `max`).
+    let expected: BTreeSet<u64> = {
+        let mut set = BTreeSet::new();
+        set.insert(0);
+        let mut pending = vec![0u64];
+        while let Some(v) = pending.pop() {
+            for c in [2 * v + 1, 2 * v + 2] {
+                if c <= max && set.insert(c) {
+                    pending.push(c);
+                }
+            }
+        }
+        set
+    };
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(seen, expected, "some dynamically enqueued jobs were lost");
+
+    // Draining ran in parallel and used the whole pool, not just one thread.
+    // On an isolated pool the fan-out makes peak overlap deterministically
+    // equal to the number of worker threads.
     assert!(
-        max_active.load(Ordering::SeqCst) >= 2,
-        "work was not parallelized: max concurrent items = {} with {threads} threads",
+        max_active.load(Ordering::SeqCst) >= THREADS as u64,
+        "work was not parallelized: peak concurrent items = {} with {THREADS} threads",
         max_active.load(Ordering::SeqCst)
     );
 }
