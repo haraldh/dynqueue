@@ -137,7 +137,6 @@ fn empty_queue() {
     assert!(out.into_inner().unwrap().is_empty());
 }
 
-
 #[test]
 fn dynqueue_iter_test_parallelism() {
     use rayon::current_num_threads;
