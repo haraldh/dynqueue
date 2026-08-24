@@ -3,6 +3,7 @@ name = "dynqueue"
 version = "0.4.0"
 authors = ["Harald Hoyer <harald@redhat.com>"]
 edition = "2024"
+rust-version = "1.87"
 
 license = "MIT"
 documentation = "https://docs.rs/dynqueue"
@@ -15,5 +16,5 @@ keywords = [ "parallel", "performance", "thread", "join", "concurrency"]
 categories = [ "concurrency" ]
 
 [dependencies]
-rayon = "1.12"
+rayon = "1"
 crossbeam-queue = { version = "0.3", optional = true }
