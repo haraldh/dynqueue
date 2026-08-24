@@ -12,8 +12,8 @@ repository = "https://github.com/haraldh/dynqueue"
 description = "Parallel work queue that can grow dynamically while it drains"
 readme = "README.md"
 
-keywords = [ "parallel", "performance", "thread", "join", "concurrency"]
-categories = [ "concurrency" ]
+keywords = ["parallel", "performance", "thread", "join", "concurrency"]
+categories = ["concurrency"]
 
 [dependencies]
 rayon = "1"
