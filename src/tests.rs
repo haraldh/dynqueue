@@ -1,26 +1,25 @@
 use crate::{DynQueueHandle, IntoDynQueue, Queue};
 use std::collections::VecDeque;
+use std::sync::Mutex;
 
 const SLEEP_MS: u64 = 10;
 
 #[inline]
-fn handle_queue<U: Queue<u64>>(t: (DynQueueHandle<u64, U>, u64)) -> u64 {
-    let (h, v) = t;
-
-    if v % 2 == 0 {
+fn handle_collect<U: Queue<u64>>(h: &DynQueueHandle<u64, U>, v: u64, out: &Mutex<Vec<u64>>) {
+    if v.is_multiple_of(2) {
         h.enqueue(11);
     }
-    if v % 3 == 0 {
+    if v.is_multiple_of(3) {
         h.enqueue(11);
     }
-    if v % 4 == 0 {
+    if v.is_multiple_of(4) {
         h.enqueue(11);
     }
     if v == 11 {
         h.enqueue(5);
         h.enqueue(17);
     }
-    v
+    out.lock().unwrap().push(v);
 }
 
 #[inline]
@@ -40,166 +39,100 @@ fn get_expected() -> Vec<u64> {
     ]
 }
 
-#[test]
-fn dynqueue_iter_test_const_sleep() {
-    use rayon::iter::IntoParallelIterator as _;
-    use rayon::iter::ParallelIterator as _;
-    use std::time::Duration;
-    let expected = get_expected();
-
-    let med = expected.iter().sum::<u64>() / expected.len() as u64;
-
-    let jq = get_input().into_dyn_queue();
-    let now = std::time::Instant::now();
-
-    let mut res = jq
-        .into_par_iter()
-        .map(handle_queue)
-        .map(|v| {
-            std::thread::sleep(Duration::from_millis(SLEEP_MS * med));
-            v
-        })
-        .collect::<Vec<_>>();
-    eprintln!("elapsed = {:#?}", now.elapsed());
+fn assert_result(out: Mutex<Vec<u64>>, expected: &[u64]) {
+    let mut res = out.into_inner().unwrap();
     res.sort();
     assert_eq!(res, expected);
-    eprintln!(
-        "instead of = {}ms",
-        res.len() * med as usize * SLEEP_MS as usize
-    );
+}
+
+#[test]
+fn dynqueue_iter_test_const_sleep() {
+    use std::time::{Duration, Instant};
+    let expected = get_expected();
+    let med = expected.iter().sum::<u64>() / expected.len() as u64;
+
+    let now = Instant::now();
+    let out = Mutex::new(Vec::new());
+    get_input().into_dyn_queue().for_each_dyn(|h, v| {
+        handle_collect(&h, v, &out);
+        std::thread::sleep(Duration::from_millis(SLEEP_MS * med));
+    });
+    eprintln!("elapsed = {:#?}", now.elapsed());
+    assert_result(out, &expected);
+}
+
+#[test]
+fn dynqueue_iter_test_const_sleep_vecdeque() {
+    use std::time::{Duration, Instant};
+    let expected = get_expected();
+    let med = expected.iter().sum::<u64>() / expected.len() as u64;
+
+    let now = Instant::now();
+    let out = Mutex::new(Vec::new());
+    VecDeque::from(get_input())
+        .into_dyn_queue()
+        .for_each_dyn(|h, v| {
+            handle_collect(&h, v, &out);
+            std::thread::sleep(Duration::from_millis(SLEEP_MS * med));
+        });
+    eprintln!("elapsed = {:#?}", now.elapsed());
+    assert_result(out, &expected);
 }
 
 #[cfg(feature = "crossbeam-queue")]
 #[test]
 fn dynqueue_iter_test_const_sleep_segqueue() {
     use crossbeam_queue::SegQueue;
-    use rayon::iter::IntoParallelIterator as _;
-    use rayon::iter::ParallelIterator as _;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     let expected = get_expected();
+    let med = expected.iter().sum::<u64>() / expected.len() as u64;
 
-    let med = expected.iter().sum::<u64>() / expected.iter().count() as u64;
     let jq = SegQueue::new();
     get_input().drain(..).for_each(|ele| jq.push(ele));
 
-    let now = std::time::Instant::now();
-
-    let mut res = jq
-        .into_dyn_queue()
-        .into_par_iter()
-        .map(handle_queue)
-        .map(|v| {
-            std::thread::sleep(Duration::from_millis(SLEEP_MS * med));
-            v
-        })
-        .collect::<Vec<_>>();
+    let now = Instant::now();
+    let out = Mutex::new(Vec::new());
+    jq.into_dyn_queue().for_each_dyn(|h, v| {
+        handle_collect(&h, v, &out);
+        std::thread::sleep(Duration::from_millis(SLEEP_MS * med));
+    });
     eprintln!("elapsed = {:#?}", now.elapsed());
-    res.sort();
-    assert_eq!(res, expected);
-    eprintln!(
-        "instead of = {}ms",
-        res.iter().count() * med as usize * SLEEP_MS as usize
-    );
-}
-
-#[test]
-fn dynqueue_iter_test_const_sleep_vecdeque() {
-    use rayon::iter::IntoParallelIterator as _;
-    use rayon::iter::ParallelIterator as _;
-    use std::time::Duration;
-    let expected = get_expected();
-
-    let med = expected.iter().sum::<u64>() / expected.len() as u64;
-
-    let jq = VecDeque::from(get_input());
-    let now = std::time::Instant::now();
-
-    let mut res = jq
-        .into_dyn_queue()
-        .into_par_iter()
-        .map(handle_queue)
-        .map(|v| {
-            std::thread::sleep(Duration::from_millis(SLEEP_MS * med));
-            v
-        })
-        .collect::<Vec<_>>();
-    eprintln!("elapsed = {:#?}", now.elapsed());
-    res.sort();
-    assert_eq!(res, expected);
-    eprintln!(
-        "instead of = {}ms",
-        res.len() * med as usize * SLEEP_MS as usize
-    );
+    assert_result(out, &expected);
 }
 
 #[test]
 fn dynqueue_iter_test_sleep_v() {
-    use rayon::iter::IntoParallelIterator as _;
-    use rayon::iter::ParallelIterator as _;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
-    let jq = get_input();
-
-    let now = std::time::Instant::now();
-
-    let mut res = jq
-        .into_dyn_queue()
-        .into_par_iter()
-        .map(handle_queue)
-        .map(|v| {
-            std::thread::sleep(Duration::from_millis(SLEEP_MS * v));
-            v
-        })
-        .collect::<Vec<_>>();
+    let now = Instant::now();
+    let out = Mutex::new(Vec::new());
+    get_input().into_dyn_queue().for_each_dyn(|h, v| {
+        handle_collect(&h, v, &out);
+        std::thread::sleep(Duration::from_millis(SLEEP_MS * v));
+    });
     eprintln!("elapsed = {:#?}", now.elapsed());
-    res.sort();
-    assert_eq!(res, get_expected());
-    eprintln!("instead of = {}ms", res.iter().sum::<u64>() * SLEEP_MS);
+    assert_result(out, &get_expected());
 }
 
 #[test]
 fn dynqueue_iter_test_sleep_inv_v() {
-    use rayon::iter::IntoParallelIterator as _;
-    use rayon::iter::ParallelIterator as _;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
-    let jq = get_input();
-
-    let now = std::time::Instant::now();
-
-    let mut res = jq
-        .into_dyn_queue()
-        .into_par_iter()
-        .map(handle_queue)
-        .map(|v| {
-            std::thread::sleep(Duration::from_millis(SLEEP_MS * (22 - v)));
-            v
-        })
-        .collect::<Vec<_>>();
+    let now = Instant::now();
+    let out = Mutex::new(Vec::new());
+    get_input().into_dyn_queue().for_each_dyn(|h, v| {
+        handle_collect(&h, v, &out);
+        std::thread::sleep(Duration::from_millis(SLEEP_MS * (22 - v)));
+    });
     eprintln!("elapsed = {:#?}", now.elapsed());
-    res.sort();
-    assert_eq!(res, get_expected());
-    eprintln!(
-        "instead of = {}ms",
-        (res.len() as u64 * 22 - res.iter().sum::<u64>()) * SLEEP_MS
-    );
+    assert_result(out, &get_expected());
 }
 
 #[test]
-fn par_iter_test() {
-    use rayon::iter::IntoParallelIterator as _;
-    use rayon::iter::ParallelIterator as _;
-    use std::time::Duration;
-
-    let now = std::time::Instant::now();
-
-    let res = get_expected()
-        .into_par_iter()
-        .map(|v| {
-            std::thread::sleep(Duration::from_millis(SLEEP_MS * v));
-            v
-        })
-        .collect::<Vec<_>>();
-    eprintln!("elapsed = {:#?}", now.elapsed());
-    eprintln!("instead of = {}ms", res.iter().sum::<u64>() * SLEEP_MS);
+fn empty_queue() {
+    let out = Mutex::new(Vec::new());
+    Vec::<u64>::new().into_dyn_queue().for_each_dyn(|h, v| {
+        handle_collect(&h, v, &out);
+    });
+    assert!(out.into_inner().unwrap().is_empty());
 }
