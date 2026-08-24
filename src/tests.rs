@@ -136,3 +136,41 @@ fn empty_queue() {
     });
     assert!(out.into_inner().unwrap().is_empty());
 }
+
+
+#[test]
+fn dynqueue_iter_test_parallelism() {
+    use rayon::current_num_threads;
+    use std::time::{Duration, Instant};
+
+    let threads = current_num_threads();
+    // With only one worker there is nothing to parallelize.
+    if threads <= 1 {
+        return;
+    }
+
+    // Lots of fixed-sleep items: enough that sequential execution clearly
+    // blows past the budget while a genuinely parallel run finishes well under it.
+    let jobs = 64u32;
+    let per = Duration::from_millis(50);
+    let sequential = jobs * per; // 64 * 50ms = 3.2 s
+
+    let start = Instant::now();
+    (0..jobs)
+        .collect::<Vec<_>>()
+        .into_dyn_queue()
+        .for_each_dyn(|_, _| {
+            std::thread::sleep(per);
+        });
+    let elapsed = start.elapsed();
+
+    // Regression guard: the original implementation kept all dynamically
+    // enqueued work on the producing thread (effectively sequential, ~= sequential).
+    // Parallel execution (>= 2 threads) must finish well below that. 0.6x leaves
+    // a generous cushion for scheduling overhead while still separating 3.2 s
+    // (sequential) from <= 1.6 s (parallel).
+    assert!(
+        elapsed < sequential.mul_f64(0.6),
+        "work was not parallelized: elapsed {elapsed:?} >= 0.6 * sequential {sequential:?}; only {threads} threads were used"
+    );
+}
