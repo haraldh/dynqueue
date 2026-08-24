@@ -1,61 +1,37 @@
-//! DynQueue - dynamically extendable Rayon parallel iterator
+//! DynQueue - a parallel work queue that can grow dynamically while it is drained.
 //!
-//! A `DynQueue<T>` can be iterated with `into_par_iter` producing `(DynQueueHandle, T)` elements.
-//! With the `DynQueueHandle<T>` a new `T` can be inserted in the `DynQueue<T>`,
-//! which is currently iterated over.
+//! A [`DynQueue<T>`] is processed in parallel with [`DynQueue::for_each_dyn`].
+//! The callback is handed a [`DynQueueHandle`] with which it can enqueue new `T`s.
+//! Those enqueued items are *not* stuck on the thread that produced them: every
+//! item lives in one shared worklist, and any idle worker drains it. So a workload
+//! that generates more work while running is actually load-balanced across all
+//! threads, unlike a static Rayon split.
 //!
 //! # Example
 //!
 //! ```
-//! use rayon::iter::IntoParallelIterator as _;
-//! use rayon::iter::ParallelIterator as _;
-//!
 //! use dynqueue::IntoDynQueue as _;
 //!
-//! let mut result = vec![1, 2, 3]
+//! let out = std::sync::Mutex::new(Vec::new());
+//! vec![1, 2, 3]
 //!     .into_dyn_queue()
-//!     .into_par_iter()
-//!     .map(|(handle, value)| {
+//!     .for_each_dyn(|handle, value| {
 //!         if value == 2 {
 //!             handle.enqueue(4)
-//!         };
-//!         value
-//!     })
-//!     .collect::<Vec<_>>();
-//! result.sort();
+//!         }
+//!         out.lock().unwrap().push(value);
+//!     });
 //!
+//! let mut result = out.into_inner().unwrap();
+//! result.sort();
 //! assert_eq!(result, vec![1, 2, 3, 4]);
 //! ```
 //!
-//! # Panics
+//! # Safety
 //!
-//! The `DynQueueHandle` shall not outlive the `DynQueue` iterator
-//!
-//! ```should_panic
-//! use dynqueue::{DynQueue, DynQueueHandle, IntoDynQueue};
-//!
-//! use rayon::iter::IntoParallelIterator as _;
-//! use rayon::iter::ParallelIterator as _;
-//! use std::sync::RwLock;
-//!
-//! static mut STALE_HANDLE: Option<DynQueueHandle<u8, RwLock<Vec<u8>>>> = None;
-//!
-//! pub fn test_func() -> Vec<u8> {
-//!     vec![1u8, 2u8, 3u8]
-//!         .into_dyn_queue()
-//!         .into_par_iter()
-//!         .map(|(handle, value)| unsafe {
-//!             STALE_HANDLE.replace(handle);
-//!             value
-//!         })
-//!         .collect::<Vec<_>>()
-//! }
-//! // test_func() panics
-//! let result = test_func();
-//! unsafe {
-//!     STALE_HANDLE.as_ref().unwrap().enqueue(4);
-//! }
-//! ```
+//! `DynQueueHandle` is a *borrowing* handle: it borrows the queue, so it can only
+//! live inside the callback it was given to and cannot be smuggled out of the
+//! iteration. Trying to retain it is a compile error, not a runtime panic.
 
 #![deny(clippy::all)]
 #![deny(missing_docs)]
@@ -71,56 +47,49 @@ macro_rules! doc_comment {
 
 doc_comment!(include_str!("../README.md"));
 
-use rayon::iter::plumbing::{
-    bridge_unindexed, Consumer, Folder, UnindexedConsumer, UnindexedProducer,
-};
 use std::collections::VecDeque;
 use std::marker::PhantomData;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, RwLock};
 
 #[cfg(test)]
 mod tests;
 
-/// Trait to produce a new DynQueue
+/// Convert a collection into a [`DynQueue`].
 pub trait IntoDynQueue<T, U: Queue<T>> {
-    /// new
-    fn into_dyn_queue<'a>(self) -> DynQueue<'a, T, U>;
+    /// Turn `self` into a `DynQueue<T>`.
+    fn into_dyn_queue(self) -> DynQueue<T, U>;
 }
 
-/// Everything implementing `Queue` can be handled by DynQueue
-#[allow(clippy::len_without_is_empty)]
-pub trait Queue<T>
-where
-    Self: Sized,
-{
-    /// push an element in the queue
+/// The back-end storage a [`DynQueue`] is built on.
+///
+/// Iterators over the items must be implemented as a [`Queue`] so the parallel
+/// drain can pull work from a single shared worklist.
+pub trait Queue<T>: Send + Sync {
+    /// Enqueue an element at the back.
+    ///
+    /// This must be safe to call from several worker threads at once.
     fn push(&self, v: T);
 
-    /// pop an element from the queue
+    /// Remove and return an element, or `None` if the queue is empty.
     fn pop(&self) -> Option<T>;
-
-    /// number of elements in the queue
-    fn len(&self) -> usize;
-
-    /// split off `size` elements
-    fn split_off(&self, size: usize) -> Self;
 }
 
-impl<T> IntoDynQueue<T, RwLock<Vec<T>>> for Vec<T> {
+impl<T: Send + Sync> IntoDynQueue<T, RwLock<Vec<T>>> for Vec<T> {
     #[inline(always)]
-    fn into_dyn_queue<'a>(self) -> DynQueue<'a, T, RwLock<Vec<T>>> {
-        DynQueue(Arc::new(DynQueueInner(RwLock::new(self), PhantomData)))
+    fn into_dyn_queue(self) -> DynQueue<T, RwLock<Vec<T>>> {
+        DynQueue(DynQueueInner::new(RwLock::new(self)))
     }
 }
 
-impl<T> IntoDynQueue<T, RwLock<Vec<T>>> for RwLock<Vec<T>> {
+impl<T: Send + Sync> IntoDynQueue<T, RwLock<Vec<T>>> for RwLock<Vec<T>> {
     #[inline(always)]
-    fn into_dyn_queue<'a>(self) -> DynQueue<'a, T, RwLock<Vec<T>>> {
-        DynQueue(Arc::new(DynQueueInner(self, PhantomData)))
+    fn into_dyn_queue(self) -> DynQueue<T, RwLock<Vec<T>>> {
+        DynQueue(DynQueueInner::new(self))
     }
 }
 
-impl<T> Queue<T> for RwLock<Vec<T>> {
+impl<T: Send + Sync> Queue<T> for RwLock<Vec<T>> {
     #[inline(always)]
     fn push(&self, v: T) {
         self.write().unwrap().push(v)
@@ -130,33 +99,23 @@ impl<T> Queue<T> for RwLock<Vec<T>> {
     fn pop(&self) -> Option<T> {
         self.write().unwrap().pop()
     }
+}
 
+impl<T: Send + Sync> IntoDynQueue<T, RwLock<VecDeque<T>>> for VecDeque<T> {
     #[inline(always)]
-    fn len(&self) -> usize {
-        self.read().unwrap().len()
-    }
-
-    #[inline(always)]
-    fn split_off(&self, size: usize) -> Self {
-        RwLock::new(self.write().unwrap().split_off(size))
+    fn into_dyn_queue(self) -> DynQueue<T, RwLock<VecDeque<T>>> {
+        DynQueue(DynQueueInner::new(RwLock::new(self)))
     }
 }
 
-impl<T> IntoDynQueue<T, RwLock<VecDeque<T>>> for VecDeque<T> {
+impl<T: Send + Sync> IntoDynQueue<T, RwLock<VecDeque<T>>> for RwLock<VecDeque<T>> {
     #[inline(always)]
-    fn into_dyn_queue<'a>(self) -> DynQueue<'a, T, RwLock<VecDeque<T>>> {
-        DynQueue(Arc::new(DynQueueInner(RwLock::new(self), PhantomData)))
+    fn into_dyn_queue(self) -> DynQueue<T, RwLock<VecDeque<T>>> {
+        DynQueue(DynQueueInner::new(self))
     }
 }
 
-impl<T> IntoDynQueue<T, RwLock<VecDeque<T>>> for RwLock<VecDeque<T>> {
-    #[inline(always)]
-    fn into_dyn_queue<'a>(self) -> DynQueue<'a, T, RwLock<VecDeque<T>>> {
-        DynQueue(Arc::new(DynQueueInner(self, PhantomData)))
-    }
-}
-
-impl<T> Queue<T> for RwLock<VecDeque<T>> {
+impl<T: Send + Sync> Queue<T> for RwLock<VecDeque<T>> {
     #[inline(always)]
     fn push(&self, v: T) {
         self.write().unwrap().push_back(v)
@@ -166,31 +125,21 @@ impl<T> Queue<T> for RwLock<VecDeque<T>> {
     fn pop(&self) -> Option<T> {
         self.write().unwrap().pop_front()
     }
-
-    #[inline(always)]
-    fn len(&self) -> usize {
-        self.read().unwrap().len()
-    }
-
-    #[inline(always)]
-    fn split_off(&self, size: usize) -> Self {
-        RwLock::new(self.write().unwrap().split_off(size))
-    }
 }
 
 #[cfg(feature = "crossbeam-queue")]
 use crossbeam_queue::SegQueue;
 
 #[cfg(feature = "crossbeam-queue")]
-impl<T> IntoDynQueue<T, SegQueue<T>> for SegQueue<T> {
+impl<T: Send + Sync> IntoDynQueue<T, SegQueue<T>> for SegQueue<T> {
     #[inline(always)]
-    fn into_dyn_queue<'a>(self) -> DynQueue<'a, T, Self> {
-        DynQueue(Arc::new(DynQueueInner(self, PhantomData)))
+    fn into_dyn_queue(self) -> DynQueue<T, SegQueue<T>> {
+        DynQueue(DynQueueInner::new(self))
     }
 }
 
 #[cfg(feature = "crossbeam-queue")]
-impl<T> Queue<T> for SegQueue<T> {
+impl<T: Send + Sync> Queue<T> for SegQueue<T> {
     #[inline(always)]
     fn push(&self, v: T) {
         SegQueue::push(self, v);
@@ -200,93 +149,143 @@ impl<T> Queue<T> for SegQueue<T> {
     fn pop(&self) -> Option<T> {
         SegQueue::pop(self)
     }
-
-    #[inline(always)]
-    fn len(&self) -> usize {
-        SegQueue::len(self)
-    }
-
-    #[inline(always)]
-    fn split_off(&self, size: usize) -> Self {
-        let q = SegQueue::new();
-        (0..size)
-            .filter_map(|_| Queue::pop(self))
-            .for_each(|ele| q.push(ele));
-        q
-    }
 }
 
-// PhantomData should prevent `DynQueueInner` to outlive the original `DynQueue`
-// but does not always.
-struct DynQueueInner<'a, T, U: Queue<T>>(U, PhantomData<&'a T>);
-
-/// The `DynQueueHandle` returned by the iterator in addition to `T`
-pub struct DynQueueHandle<'a, T, U: Queue<T>>(Arc<DynQueueInner<'a, T, U>>);
+/// A handle to enqueue more work into a [`DynQueue`] while it is being drained.
+///
+/// It borrows the queue, so it cannot outlive the `for_each_dyn` callback it was
+/// received from. It is small and cheap to copy.
+#[derive(Clone, Copy)]
+pub struct DynQueueHandle<'a, T, U: Queue<T>>(&'a DynQueueInner<T, U>);
 
 impl<T, U: Queue<T>> DynQueueHandle<'_, T, U> {
-    /// Enqueue `T` in the `DynQueue<T>`, which is currently iterated.
+    /// Enqueue `job`, to be picked up by any idle worker.
     #[inline]
     pub fn enqueue(&self, job: T) {
-        (self.0).0.push(job)
+        let _gate = self.0.gate.lock().unwrap();
+        self.0.queue.push(job)
     }
 }
 
-/// The `DynQueue<T>` which can be parallel iterated over
-pub struct DynQueue<'a, T, U: Queue<T>>(Arc<DynQueueInner<'a, T, U>>);
+/// The parallel work queue produced by [`IntoDynQueue::into_dyn_queue`].
+pub struct DynQueue<T, U: Queue<T>>(DynQueueInner<T, U>);
 
-impl<'a, T, U> UnindexedProducer for DynQueue<'a, T, U>
+impl<T, U> DynQueue<T, U>
 where
     T: Send + Sync,
-    U: IntoDynQueue<T, U> + Queue<T> + Send + Sync,
+    U: Queue<T>,
 {
-    type Item = (DynQueueHandle<'a, T, U>, T);
-
-    fn split(self) -> (Self, Option<Self>) {
-        let len = (self.0).0.len();
-
-        if len >= 2 {
-            let new_q = (self.0).0.split_off(len / 2);
-            (self, Some(new_q.into_dyn_queue()))
-        } else {
-            (self, None)
-        }
-    }
-
-    fn fold_with<F>(self, folder: F) -> F
+    /// Process every element of the queue in parallel, allowing `f` to enqueue
+    /// new elements via the [`DynQueueHandle`] it receives.
+    ///
+    /// Work produced while the queue is being drained is distributed across all
+    /// worker threads: they all pull from one shared worklist, so no producer
+    /// thread is ever forced to process all of its own newly generated work.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the callback panics. The panic is propagated to the caller.
+    pub fn for_each_dyn<F>(self, f: F)
     where
-        F: Folder<Self::Item>,
+        F: Fn(DynQueueHandle<'_, T, U>, T) + Sync + Send,
     {
-        let mut folder = folder;
-        loop {
-            let ret = (self.0).0.pop();
+        let inner = self.0;
+        let workers = rayon::current_num_threads();
 
-            if let Some(v) = ret {
-                folder = folder.consume((DynQueueHandle(self.0.clone()), v));
-
-                if folder.full() {
-                    break;
-                }
-            } else {
-                // Self shall have the only reference
-                assert_eq!(Arc::strong_count(&self.0), 1, "Stale Handle");
-                break;
+        // A drainer per worker thread. All drainers share the one worklist, so
+        // an item enqueued by any drainer is picked up by the next idle one.
+        rayon::scope(|scope| {
+            let inner = &inner;
+            let f = &f;
+            for _ in 0..workers {
+                scope.spawn(move |_| drain(inner, f));
             }
-        }
-        folder
+        });
     }
 }
 
-impl<'a, T, U> rayon::iter::ParallelIterator for DynQueue<'a, T, U>
-where
-    T: Send + Sync,
-    U: IntoDynQueue<T, U> + Queue<T> + Send + Sync,
-{
-    type Item = (DynQueueHandle<'a, T, U>, T);
+/// Counts items currently being processed (popped from the queue, not yet
+/// returned), so the drain loops can tell when all outstanding work, including
+/// work other threads are about to enqueue, is truly finished.
+struct InFlight<'a>(&'a AtomicUsize);
 
-    fn drive_unindexed<C>(self, consumer: C) -> <C as Consumer<Self::Item>>::Result
-    where
-        C: UnindexedConsumer<Self::Item>,
-    {
-        bridge_unindexed(self, consumer)
+impl<'a> InFlight<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        InFlight(counter)
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        // Decrement even if the callback panics, so no worker hangs waiting for
+        // quiescence after a panicked item.
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// The result of a worker trying to grab the next item.
+enum Pop<T> {
+    /// An item was taken.
+    Item(T),
+    /// The queue is temporarily empty but other items are in flight; retry.
+    Retry,
+    /// The queue is empty and no items are in flight: all work is done.
+    Done,
+}
+
+/// One worker thread's drain loop. All workers share `inner.queue` (guarded by
+/// `inner.gate`), so newly enqueued items are seen by every worker, not just the
+/// one that produced them.
+fn drain<T, U, F>(inner: &DynQueueInner<T, U>, f: &F)
+where
+    T: Send,
+    U: Queue<T>,
+    F: Fn(DynQueueHandle<'_, T, U>, T) + Sync,
+{
+    loop {
+        let decision = {
+            let _gate = inner.gate.lock().unwrap();
+            if let Some(v) = inner.queue.pop() {
+                Pop::Item(v)
+            } else if inner.active.load(Ordering::SeqCst) == 0 {
+                Pop::Done
+            } else {
+                Pop::Retry
+            }
+        };
+
+        match decision {
+            // Kept alive until the callback returns, so `active` reflects an
+            // item that is genuinely in flight.
+            Pop::Item(v) => {
+                let _inflight = InFlight::new(&inner.active);
+                f(DynQueueHandle(inner), v);
+            }
+            Pop::Retry => std::thread::yield_now(),
+            Pop::Done => break,
+        }
+    }
+}
+
+struct DynQueueInner<T, U: Queue<T>> {
+    queue: U,
+    /// Serialises `pop`/`enqueue`/quiescence checks so the "empty && idle"
+    /// termination decision is race-free.
+    gate: Mutex<()>,
+    /// Number of items currently being processed (see [`InFlight`]).
+    active: AtomicUsize,
+    /// Keeps `T`'s type available for the trait bound `U: Queue<T>`.
+    marker: PhantomData<T>,
+}
+
+impl<T, U: Queue<T>> DynQueueInner<T, U> {
+    fn new(queue: U) -> Self {
+        DynQueueInner {
+            queue,
+            gate: Mutex::new(()),
+            active: AtomicUsize::new(0),
+            marker: PhantomData,
+        }
     }
 }

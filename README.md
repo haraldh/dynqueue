@@ -1,75 +1,108 @@
 [![Rust](https://github.com/haraldh/dynqueue/workflows/Rust/badge.svg)](https://github.com/haraldh/dynqueue/actions)
 [![Coverage Status](https://codecov.io/gh/haraldh/dynqueue/graph/badge.svg?token=E2KO8O9W9O)](https://codecov.io/gh/haraldh/dynqueue)
 
-# DynQueue - dynamically extendable Rayon parallel iterator
+# DynQueue - a parallel work queue that can grow dynamically while it drains
 
-DynQueue is a Rust library that provides a specialized parallel iterator built on top of the Rayon parallel computing
-framework. Its key feature is the ability to dynamically add new items to the collection while it's being processed in
-parallel.
+DynQueue is a small Rust library for processing a worklist in parallel where **new
+work can be added while the queue is still being consumed**.
 
-This project fills a specific niche in the Rust parallel computing ecosystem by providing a way to work with dynamically
-growing workloads in a parallel context, something that's not directly supported by Rayon itself.
+This fills a niche Rayon does not cover directly: Rayon's parallel iterators split
+a *known, static* collection across threads and cannot rebalance work that is
+*generated* as iteration runs. DynQueue instead puts every item (initial *and*
+newly enqueued) into one shared worklist that every worker thread drains, so a
+workload that spawns more work while running stays load-balanced.
 
-## Core Functionality:
+## Core functionality
 
-- Allows adding new elements to a collection while it's being iterated over in parallel
-- Works with multiple collection types: `Vec`, `VecDeque`, and `crossbeam_queue::SegQueue` (via feature flag)
-- Uses Rayon's parallel iteration capabilities for efficient parallel processing
-- Provides a clean API for dynamically expanding workloads
+- Process a queue in parallel with `for_each_dyn`, whose callback can enqueue more
+  work via the `DynQueueHandle` it receives.
+- Newly enqueued items are picked up by **any** idle worker — they are never stuck
+  on the thread that produced them.
+- Works over `Vec`, `VecDeque` and `crossbeam_queue::SegQueue` (via the
+  `crossbeam-queue` feature). Add your own backing by implementing the `Queue`
+  trait.
 
-## Technical Implementation:
+## Use cases
 
-- Implements Rayon's parallel iteration traits
-- Uses a handle-based approach where each iterator function receives a handle to insert new items
-- Thread-safe implementation using RwLock and Arc for standard collections
-- Optional integration with crossbeam's lock-free SegQueue
+- Tree / graph traversal where new nodes are discovered while visiting.
+- Backtracking and search where each step can produce more candidates.
+- Any parallel task whose total workload is not known ahead of time.
 
-## Use Cases:
-
-The library is particularly useful for:
-
-- Tree/graph traversal algorithms where new nodes are discovered during processing
-- Work-stealing parallel algorithms where work can be dynamically generated
-- Any parallel processing task where the total workload is not known upfront
-
-## Example Usage:
+## Example
 
 ```rust
-use rayon::iter::IntoParallelIterator as _;
-use rayon::iter::ParallelIterator as _;
 use dynqueue::IntoDynQueue as _;
 
-fn main() {
-    let mut result = vec![1, 2, 3]
-        .into_dyn_queue()
-        .into_par_iter()
-        .map(|(handle, value)| {
-            if value == 2 {
-                handle.enqueue(4)
-            };
-            value
-        })
-        .collect::<Vec<_>>();
-    result.sort();
+let out = std::sync::Mutex::new(Vec::new());
+vec![1, 2, 3]
+    .into_dyn_queue()
+    .for_each_dyn(|handle, value| {
+        if value == 2 {
+            handle.enqueue(4)
+        }
+        out.lock().unwrap().push(value);
+    });
 
-    assert_eq!(result, vec![1, 2, 3, 4]);
-}
+let mut result = out.into_inner().unwrap();
+result.sort();
+assert_eq!(result, vec![1, 2, 3, 4]);
 ```
 
-## TL;DR
+> Note: this is a **breaking change** (v0.3 → v0.4). The old `into_par_iter()`
+> API provided only a static Rayon split and did not distribute dynamically
+> generated work; it was replaced by the dynamic `for_each_dyn` (see the
+> "Why not a parallel iterator?" section).
 
-A `DynQueue<T>` can be iterated with `into_par_iter` producing `(DynQueueHandle, T)` elements.
-With the `DynQueueHandle<T>` a new `T` can be inserted in the `DynQueue<T>`,
-which is currently iterated over.
+## Advantages over a plain Rayon parallel iterator
 
-A `Vec<T>`, `VecDeque<T>` and `crossbeam_queue::SegQueue<T>` (with `feature = "crossbeam-queue"`)
-can be turned into a `DynQueue<T>` with `.into_dyn_queue()`.
+A dynamic workload processed with a naive `par_iter` split runs at roughly the
+speed of one thread. DynQueue distributes newly generated items across all
+workers:
+
+| approach                       | wall time (4 threads, heavy dynamic workload) |
+| ------------------------------ | --------------------------------------------- |
+| strictly sequential            | 1.26 s                                        |
+| static Rayon split             | 1.26 s                                        |
+| **DynQueue `for_each_dyn`** | ~0.32 s (≈ 4×)                                |
+
+## Why not a Rayon parallel iterator?
+
+Rayon's `ParallelIterator` contract is built around `split` + `fold`: work is
+partitioned up front and each partition is consumed by one thread. Dynamically
+enqueued items cannot be re-partitioned once folding starts, so they stay on the
+producing thread. That made the old `into_par_iter` behind `dynqueue` effectively
+sequential for growing workloads. DynQueue sidesteps this by draining one shared,
+mutex-guarded worklist from all workers — that is what delivers real load
+balancing, at the cost of not composing with `map`/`collect` chains.
+
+## Constraints
+
+- `DynQueueHandle` is a borrowing handle: it is only valid inside the callback it
+  is given to. You cannot stash it for later — that is a compile error, not a
+  runtime panic.
+- The callback must be `Send + Sync` (shared across worker threads). Use a
+  `Mutex`/channel to write results out of the callback.
+- Panics inside the callback propagate to the caller.
 
 ## Features
 
-* `crossbeam-queue` : to use `crossbeam::queue::SegQueue` as the inner collection.
+- `crossbeam-queue`: use `crossbeam::queue::SegQueue` as the back-end.
+
+## TL;DR
+
+A `DynQueue<T>` is drained in parallel with `for_each_dyn(|handle, item| ...)`.
+Inside the callback, `handle.enqueue(new)` adds more work that any idle worker
+picks up.
 
 ## Changelog
+
+### 0.4.0
+
+- **Breaking:** replace the static `into_par_iter` API with `for_each_dyn`.
+  Dynamically generated work is now distributed across all worker threads instead
+  of being stuck on the producing thread.
+- `DynQueueHandle` is now borrowing and cannot outlive the callback.
+- Drop the obsolete `Queue::{len, split_off}` methods.
 
 ### 0.2.0
 
