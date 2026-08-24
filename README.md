@@ -6,11 +6,12 @@
 DynQueue is a small Rust library for processing a worklist in parallel where **new
 work can be added while the queue is still being consumed**.
 
-This fills a niche Rayon does not cover directly: Rayon's parallel iterators split
-a *known, static* collection across threads and cannot rebalance work that is
-*generated* as iteration runs. DynQueue instead puts every item (initial *and*
-newly enqueued) into one shared worklist that every worker thread drains, so a
-workload that spawns more work while running stays load-balanced.
+Rayon can express dynamically generated work with scoped tasks, but its ordinary
+parallel iterators are designed around splitting an existing collection. DynQueue
+provides a different, queue-oriented interface: every item, both initial and newly
+enqueued, is processed by the same callback. The queue is drained to completion
+without requiring callers to create a task closure for every item or implement
+worker lifecycle and termination detection.
 
 ## Core functionality
 
@@ -48,12 +49,7 @@ result.sort();
 assert_eq!(result, vec![1, 2, 3, 4]);
 ```
 
-> Note: this is a **breaking change** (v0.3 → v0.4). The old `into_par_iter()`
-> API provided only a static Rayon split and did not distribute dynamically
-> generated work; it was replaced by the dynamic `for_each_dyn` (see the
-> "Why not a parallel iterator?" section).
-
-## Advantages over a plain Rayon parallel iterator
+## Compared with a plain Rayon parallel iterator
 
 A dynamic workload processed with a naive `par_iter` split runs at roughly the
 speed of one thread. DynQueue distributes newly generated items across all
@@ -63,17 +59,34 @@ workers:
 | ------------------------------ | --------------------------------------------- |
 | strictly sequential            | 1.26 s                                        |
 | static Rayon split             | 1.26 s                                        |
-| **DynQueue `for_each_dyn`** | ~0.32 s (≈ 4×)                                |
+| **DynQueue `for_each_dyn`**   | ~0.32 s (≈ 4×)                                |
 
-## Why not a Rayon parallel iterator?
+## How this relates to Rayon
 
 Rayon's `ParallelIterator` contract is built around `split` + `fold`: work is
 partitioned up front and each partition is consumed by one thread. Dynamically
 enqueued items cannot be re-partitioned once folding starts, so they stay on the
-producing thread. That made the old `into_par_iter` behind `dynqueue` effectively
-sequential for growing workloads. DynQueue sidesteps this by draining one shared,
-mutex-guarded worklist from all workers — that is what delivers real load
-balancing, at the cost of not composing with `map`/`collect` chains.
+producing thread. DynQueue instead drains one shared, mutex-guarded worklist from
+all workers. This delivers load balancing for dynamically generated items, at the
+cost of not composing with `map`/`collect` chains.
+
+This does not mean Rayon itself is limited to static work. [`rayon::scope`]
+lets a task spawn more tasks, and Rayon's work-stealing scheduler distributes them
+among workers. Prefer that API when each generated job is naturally a distinct
+closure or needs its own captured state. Prefer DynQueue when the workload is a
+stream of homogeneous values handled by one callback:
+
+```text
+Rayon scope: task -> spawn another closure
+DynQueue:     item -> enqueue another item -> same callback
+```
+
+Lower-level concurrent and work-stealing queue crates can also implement this
+pattern, but require the caller to construct the worker loop and decide when all
+recursively generated work is complete. DynQueue packages those pieces into
+`for_each_dyn` while allowing custom storage through the `Queue` trait.
+
+[`rayon::scope`]: https://docs.rs/rayon/latest/rayon/fn.scope.html
 
 ## Constraints
 
@@ -93,22 +106,3 @@ balancing, at the cost of not composing with `map`/`collect` chains.
 A `DynQueue<T>` is drained in parallel with `for_each_dyn(|handle, item| ...)`.
 Inside the callback, `handle.enqueue(new)` adds more work that any idle worker
 picks up.
-
-## Changelog
-
-### 0.4.0
-
-- **Breaking:** replace the static `into_par_iter` API with `for_each_dyn`.
-  Dynamically generated work is now distributed across all worker threads instead
-  of being stuck on the producing thread.
-- `DynQueueHandle` is now borrowing and cannot outlive the callback.
-- Drop the obsolete `Queue::{len, split_off}` methods.
-
-### 0.2.0
-
-- introduce `IntoDynQueue`
-- handle lockless collections
-
-### 0.1.0
-
-- initial version
