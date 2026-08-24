@@ -1,0 +1,5 @@
+# Pin the edition for plain `rustfmt` invocations (tools that format a single
+# file without reading Cargo.toml). Without this, rustfmt defaults to
+# edition 2015 and sorts `use` imports differently than `cargo fmt` (which
+# reads edition 2024 from Cargo.toml), causing churn and CI check failures.
+edition = "2024"
