@@ -1,6 +1,6 @@
 use crate::{DynQueueHandle, IntoDynQueue, Queue};
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 const SLEEP_MS: u64 = 10;
 
@@ -135,6 +135,24 @@ fn empty_queue() {
         handle_collect(&h, v, &out);
     });
     assert!(out.into_inner().unwrap().is_empty());
+}
+
+// Covers the `IntoDynQueue` impls that accept an already-wrapped
+// `RwLock<Vec<T>>` / `RwLock<VecDeque<T>>` (src/lib.rs), which the `Vec` and
+// `VecDeque` tests above do not exercise.
+#[test]
+fn dynqueue_iter_test_rwlock_vec_backends() {
+    let out = Mutex::new(Vec::new());
+    RwLock::new(get_input())
+        .into_dyn_queue()
+        .for_each_dyn(|h, v| handle_collect(&h, v, &out));
+    assert_result(out, &get_expected());
+
+    let out = Mutex::new(Vec::new());
+    RwLock::new(VecDeque::from(get_input()))
+        .into_dyn_queue()
+        .for_each_dyn(|h, v| handle_collect(&h, v, &out));
+    assert_result(out, &get_expected());
 }
 
 // Regression guard for the crate's core feature: `for_each_dyn` must let each
