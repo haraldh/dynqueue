@@ -28,6 +28,10 @@ worker lifecycle and termination detection.
 - Tree / graph traversal where new nodes are discovered while visiting.
 - Backtracking and search where each step can produce more candidates.
 - Any parallel task whose total workload is not known ahead of time.
+- Classic *worklist algorithms* (compiler dataflow analyses, mark-and-sweep,
+  reachability): the canonical shape is exactly one callback over a queue of
+  homogeneous items, where processing an item adds more items — usually
+  serially, and DynQueue is the drop-in way to parallelize it.
 
 ## Example
 
@@ -47,6 +51,14 @@ vec![1, 2, 3]
 let mut result = out.into_inner().unwrap();
 result.sort();
 assert_eq!(result, vec![1, 2, 3, 4]);
+```
+
+Runnable examples live in [`examples/`](examples/). `dua` is a tiny parallel
+`du`: one callback walks the tree, enqueuing the entries of every directory it
+reads, and reports filesystem errors as work items instead of panicking.
+
+```sh
+cargo run --release --example dua -- --dirs /usr
 ```
 
 ## Compared with a plain Rayon parallel iterator
