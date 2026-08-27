@@ -1,5 +1,8 @@
 [![Rust](https://github.com/haraldh/dynqueue/workflows/Rust/badge.svg)](https://github.com/haraldh/dynqueue/actions)
 [![Coverage Status](https://codecov.io/gh/haraldh/dynqueue/graph/badge.svg?token=E2KO8O9W9O)](https://codecov.io/gh/haraldh/dynqueue)
+[![crates.io](https://img.shields.io/crates/v/dynqueue.svg)](https://crates.io/crates/dynqueue)
+[![docs.rs](https://img.shields.io/docsrs/dynqueue)](https://docs.rs/dynqueue)
+[![License: MIT](https://img.shields.io/crates/l/dynqueue.svg)](https://opensource.org/licenses/MIT)
 
 # DynQueue - a parallel work queue that can grow dynamically while it drains
 
